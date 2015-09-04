@@ -1,4 +1,7 @@
-﻿using System;
+﻿using CanBusTriple;
+using CanLogger.Properties;
+using Microsoft.Win32;
+using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
@@ -10,9 +13,6 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
-using CanBusTriple;
-using CanLogger.Properties;
-using Microsoft.Win32;
 
 namespace CanLogger
 {
@@ -24,7 +24,15 @@ namespace CanLogger
         const int RECEIVE_BUFFER_SIZE = 10000;
         const int DISPLAY_BUFFER_SIZE = 5000;
         const int REFRESH_INTERVAL = 200;
+
+#if MAZDA
+        private readonly CanBusMazda3 _cbt;
+#elif GENERIC
         private readonly CBTController _cbt;
+#else
+        private readonly FakeCBT _cbt;
+#endif
+
         private int _bus;
         private int _filter1;
         private int _mask1;
@@ -32,19 +40,31 @@ namespace CanLogger
         private readonly DispatcherTimer _timer;
         private StreamWriter _sw;
 
+        private bool _isViewChronological;
+
         public MainWindow()
         {
             InitializeComponent();
             Refresh_Ports(null, null);
-            _cbt = new CBTController((string)PortList.SelectedItem);            
+
+#if MAZDA
+            _cbt = new CanBusMazda3((string)PortList.SelectedItem);
+#elif GENERIC
+            _cbt = new CBTController((string)PortList.SelectedItem);
+#else
+            _cbt = new FakeCBT((string)PortList.SelectedItem);
+#endif
+
             _buffer = new CanMessageBuffer(RECEIVE_BUFFER_SIZE);
-            _timer = new DispatcherTimer { IsEnabled = false, Interval = TimeSpan.FromMilliseconds(REFRESH_INTERVAL)};
+            _timer = new DispatcherTimer { IsEnabled = false, Interval = TimeSpan.FromMilliseconds(REFRESH_INTERVAL) };
             _timer.Tick += (sender, e) => { if (!_buffer.IsEmpty) LoadDataGrid(); };
             Closing += MainWindow_Closing;
 
             BtConnect.IsChecked = BtFilter.IsChecked = BtSave.IsChecked = false;
             LoggingDisabled();
             DgLog.ItemsSource = new ObservableCollection<CanMessage>();
+
+            _isViewChronological = true;
         }
 
         async void MainWindow_Closing(object sender, CancelEventArgs e)
@@ -56,7 +76,8 @@ namespace CanLogger
 
         private void btSaveFile_Click(object sender, RoutedEventArgs e)
         {
-            var openFileDialog = new SaveFileDialog {
+            var openFileDialog = new SaveFileDialog
+            {
                 Filter = "File .csv|*.csv",
                 DefaultExt = "csv",
                 Title = "Select file for saving log"
@@ -66,14 +87,16 @@ namespace CanLogger
 
         private void Refresh_Ports(object sender, RoutedEventArgs e)
         {
-            PortList.Items.Clear(); //DropDownItems.Clear();
+            PortList.Items.Clear();
             var comPorts = SerialPort.GetPortNames();
-            if (comPorts.Length == 0) {
+            if (comPorts.Length == 0)
+            {
                 PortList.Items.Add("----");
                 PortList.SelectedIndex = 0;
                 PortList.IsEnabled = BtConnect.IsEnabled = false;
             }
-            else {
+            else
+            {
                 foreach (var port in comPorts) PortList.Items.Add(port);
                 PortList.SelectedItem = comPorts.Contains(Settings.Default.PortName) ? Settings.Default.PortName : comPorts[0];
                 PortList.IsEnabled = BtConnect.IsEnabled = true;
@@ -86,12 +109,13 @@ namespace CanLogger
             LbConnect.Content = "Connecting...";
             BtConnect.IsEnabled = PortList.IsEnabled = BtRefreshPorts.IsEnabled = false;
             ExceptionDispatchInfo capturedException = null;
-            try {
+            try
+            {
                 _cbt.Connect();
                 var info = await _cbt.GetSystemInfo();
                 if (!info.ContainsKey("name") || !info.ContainsKey("version"))
                     throw new Exception("Unable to identify CANBus Triple");
-                
+
                 LbInfo.Content = info["name"] + " " + info["version"];
                 ImgConnect.Source = (ImageSource)Resources["ImgDisconnect"];
                 ImgConnect.Opacity = 1;
@@ -99,12 +123,13 @@ namespace CanLogger
                 BtConnect.ToolTip = "Disconnect";
                 BtConnect.IsEnabled = true;
             }
-            catch (Exception ex) {
+            catch (Exception ex)
+            {
                 capturedException = ExceptionDispatchInfo.Capture(ex);
             }
             if (capturedException == null) return;
 
-            var task = _cbt.Connected? _cbt.Disconnect() : Task.Delay(5);
+            var task = _cbt.Connected ? _cbt.Disconnect() : Task.Delay(5);
             MessageBox.Show(capturedException.SourceException.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             await task;
             BtConnect.IsChecked = false;
@@ -113,39 +138,56 @@ namespace CanLogger
         private async void btConnect_Unchecked(object sender, RoutedEventArgs e)
         {
             if (_cbt.Connected) await _cbt.Disconnect();
-            
+
             LbInfo.Content = "";
             ImgConnect.Source = (ImageSource)Resources["ImgDisconnect"];
             ImgConnect.Opacity = 1;
             LbConnect.Content = "Disconnected";
             BtConnect.ToolTip = "Connect";
             BtRefreshPorts.IsEnabled = true;
-            if ((string)PortList.SelectedItem != "----") {
+            if ((string)PortList.SelectedItem != "----")
+            {
                 PortList.IsEnabled = BtConnect.IsEnabled = true;
             }
+        }
+
+        private void btView_Checked(object sender, RoutedEventArgs e)
+        {
+            _isViewChronological = false;
+            LoadDataGrid();
+        }
+
+        private void btView_Unchecked(object sender, RoutedEventArgs e)
+        {
+            _isViewChronological = true;
+            LoadDataGrid();
         }
 
         private async void btLog_Checked(object sender, RoutedEventArgs e)
         {
             ExceptionDispatchInfo capturedException = null;
-            try {
+            try
+            {
                 _cbt.CanMessageReceived += cbt_CanMessageReceived;
                 LoggingEnabled();
                 if (BtConnect.IsChecked != true) BtConnect.IsChecked = true;
                 _timer.Start();
                 if (BtSave.IsChecked == true) StartLog();
-                if (BtFilter.IsChecked == true && (_filter1 > 0 || CbMask.IsChecked == true))  {
+                if (BtFilter.IsChecked == true && (_filter1 > 0 || CbMask.IsChecked == true))
+                {
                     await _cbt.EnableLogWithMask(_bus, _filter1, _mask1);
                 }
-                else {
+                else
+                {
                     await _cbt.EnableLog(_bus);
                 }
             }
-            catch (Exception ex) {
+            catch (Exception ex)
+            {
                 capturedException = ExceptionDispatchInfo.Capture(ex);
             }
             if (capturedException == null) return;
-            
+
             var task = _cbt.Busy ? _cbt.CancelCommand() : Task.Delay(5);
             LoggingDisabled();
             _timer.Stop();
@@ -157,11 +199,13 @@ namespace CanLogger
         private async void btLog_Unchecked(object sender, RoutedEventArgs e)
         {
             ExceptionDispatchInfo captureEx = null;
-            try {
+            try
+            {
                 _cbt.CanMessageReceived -= cbt_CanMessageReceived;
                 await _cbt.DisableLog(_bus);
             }
-            catch (Exception ex) {
+            catch (Exception ex)
+            {
                 captureEx = ExceptionDispatchInfo.Capture(ex);
             }
 
@@ -170,9 +214,9 @@ namespace CanLogger
             _timer.Stop();
             TerminateLog();
 
-            if (captureEx != null)          
+            if (captureEx != null)
                 MessageBox.Show(captureEx.SourceException.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
-            
+
             await task;
         }
 
@@ -189,15 +233,19 @@ namespace CanLogger
         {
             if (FilePath.Text.Length == 0) return;
             var path = FilePath.Text.Trim();
-            if (File.Exists(path)) {
+            if (File.Exists(path))
+            {
                 _sw = new StreamWriter(File.Open(path, FileMode.Append));
             }
-            else {
-                try {
+            else
+            {
+                try
+                {
                     _sw = new StreamWriter(File.OpenWrite(path));
-                    _sw.WriteLine("\"Time\";\"Msg ID\";\"Data\";\"Bus RX\";\"Notes\"");
+                    _sw.WriteLine("Time;Bus;Msg ID;Data;Bus RX;Notes");
                 }
-                catch (Exception) {
+                catch (Exception)
+                {
                     // ignored
                 }
             }
@@ -222,18 +270,40 @@ namespace CanLogger
 
         private void LoadDataGrid()
         {
-            var msgs = _buffer.GetLastMessages(DISPLAY_BUFFER_SIZE);
-            foreach (var msg in msgs) {
+            CanMessage[] msgs;
+
+            if (_isViewChronological)
+            {
+                msgs = _buffer.GetLastMessages(DISPLAY_BUFFER_SIZE);
+            }
+            else
+            {
+                msgs = _buffer.GetDistinctMessages();
+                ((ObservableCollection<CanMessage>)DgLog.ItemsSource).Clear();
+            }
+
+            foreach (var msg in msgs)
+            {
                 ((ObservableCollection<CanMessage>)DgLog.ItemsSource).Add(msg);
                 if (DgLog.Items.Count > DISPLAY_BUFFER_SIZE)
                     ((ObservableCollection<CanMessage>)DgLog.ItemsSource).RemoveAt(0);
             }
-            
-            // Autoscroll to last item
-            var border = VisualTreeHelper.GetChild(DgLog, 0) as Decorator;
-            if (border != null) {
-                var scroll = border.Child as ScrollViewer;
-                scroll?.ScrollToEnd();
+
+            if (_isViewChronological)
+            {
+                LbCount.Content = ((ObservableCollection<CanMessage>)DgLog.ItemsSource).Count + " on " + DISPLAY_BUFFER_SIZE;
+
+                // Autoscroll to last item
+                var border = VisualTreeHelper.GetChild(DgLog, 0) as Decorator;
+                if (border != null)
+                {
+                    var scroll = border.Child as ScrollViewer;
+                    scroll?.ScrollToEnd();
+                }
+            }
+            else
+            {
+                LbCount.Content = msgs.Length + " messages";
             }
         }
 
@@ -241,15 +311,17 @@ namespace CanLogger
         {
             if (msg.Bus != _bus) return;
 
-            _sw?.WriteLine("\"" + msg.Time + "\";\"" + $"{msg.Id:X3}" + "\";\"" + msg.HexData + "\";"
-                           + msg.Status + ";\"\"");
+            _sw?.WriteLine(string.Format("{0};{1};{2};{3};{4};{5}", msg.Time, msg.Bus, $"{ msg.Id:X3}", msg.HexData, msg.Status, msg.ConvertedValue));
             _buffer.AddMessage(msg);
         }
 
         private void PortList_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (e.AddedItems.Count == 0) return;
-            if ((string) e.AddedItems[0] != Settings.Default.PortName) {
+            if (e.AddedItems.Count == 0)
+               return;
+
+            if ((string)e.AddedItems[0] != Settings.Default.PortName)
+            {
                 Settings.Default.PortName = e.AddedItems[0].ToString();
                 Settings.Default.Save();
             }

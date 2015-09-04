@@ -1,6 +1,7 @@
-﻿using System;
+﻿using CanBusTriple;
+using System;
+using System.Collections.Generic;
 using System.Threading;
-using CanBusTriple;
 
 namespace CanLogger
 {
@@ -8,6 +9,7 @@ namespace CanLogger
     {
         const int TIMEOUT_MS = 500;
         private readonly CanMessage[] _buffer;
+        private readonly Dictionary<int, CanMessage> _bufferDistinct;
         // Where the next message will be put
         private int _putIndex;
         // Where the next message will be get (only if != putIndex)
@@ -21,19 +23,42 @@ namespace CanLogger
         {
             _buffer = new CanMessage[bufferSize];
             _getIndex = _putIndex = 0;
+
+            _bufferDistinct = new Dictionary<int, CanMessage>(bufferSize);
         }
 
         public void AddMessage(CanMessage msg)
         {
             WaitSemaphore();
             _busy = true;
+
             _buffer[_putIndex++] = msg;
             if (_putIndex == _buffer.Length) _putIndex = 0;
             if (_putIndex == _getIndex) {
                 _getIndex++;
                 if (_getIndex == _buffer.Length) _getIndex = 0;
             }
+
+            if (_bufferDistinct.ContainsKey(msg.Id))
+                _bufferDistinct[msg.Id] = msg;
+            else
+            {
+                _bufferDistinct.Add(msg.Id, msg);
+            }
+
             _busy = false;
+        }
+
+        public CanMessage[] GetDistinctMessages()
+        {
+            WaitSemaphore();
+            _busy = true;
+
+            CanMessage[] msgs = new CanMessage[_bufferDistinct.Count];
+            _bufferDistinct.Values.CopyTo(msgs, 0);
+
+            _busy = false;
+            return msgs;
         }
 
         public CanMessage[] GetLastMessages(int num)
@@ -42,6 +67,7 @@ namespace CanLogger
             _busy = true;
 
             CanMessage[] msgs;
+
             if (_putIndex == _getIndex) {
                 // No new messages
                 msgs = new CanMessage[0];
@@ -62,6 +88,7 @@ namespace CanLogger
                 Array.Copy(_buffer, 0, msgs, sizeBlock1, _putIndex);
                 _getIndex = _putIndex;
             }
+
             _busy = false;
             return msgs;
         }
@@ -70,6 +97,8 @@ namespace CanLogger
         {
             WaitSemaphore();
             _getIndex = _putIndex = 0;
+            Array.Clear(_buffer, 0, _buffer.Length);
+            _bufferDistinct.Clear();
         }
 
         private void WaitSemaphore()
