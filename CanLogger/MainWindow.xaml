@@ -227,6 +227,7 @@
             <DataGrid Name="DgLog" AutoGenerateColumns="False" CanUserResizeRows="False" IsReadOnly="True" SelectionUnit="Cell" d:DataContext="{d:DesignInstance canBusTriple:Pid}">
                 <DataGrid.Columns>
                     <DataGridTextColumn Width="84" Header="Time" Binding="{Binding Time}"/>
+                    <DataGridTextColumn Width="50" Header="Bus" Binding="{Binding Bus}"/>
                     <DataGridTextColumn Width="50" Header="Msg id" Binding="{Binding Id}"/>
                     <DataGridTextColumn Width="140" Header="Data bytes"  Binding="{Binding HexData}"/>
                     <DataGridTextColumn Width="45" Header="Status"  Binding="{Binding Status}"/>
